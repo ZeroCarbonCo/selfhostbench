@@ -175,3 +175,21 @@ function signupForm() {
 const page = document.body.dataset.page;
 ({ home: homePage, results: resultsPage, device: devicePage, result: resultPage }[page] || (() => {}))();
 signupForm();
+
+// Copy buttons on install commands.
+document.querySelectorAll("pre.copy").forEach((pre) => {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn";
+  btn.textContent = "Copy";
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(pre.querySelector("code").innerText);
+      btn.textContent = "Copied";
+    } catch {
+      btn.textContent = "Select & copy";
+    }
+    setTimeout(() => { btn.textContent = "Copy"; }, 1800);
+  });
+  pre.appendChild(btn);
+});

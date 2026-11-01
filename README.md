@@ -27,7 +27,8 @@ AMD GPUs for Ollama, GPU for Immich.
 - Linux, x86_64 (arm64 such as Raspberry Pi 5 should work but is untested)
 - Docker, usable by your user (or run with `sudo`)
 - Python 3.8+ (standard library only, nothing to install)
-- ~15 GB free disk while running (Ollama's image is large) and 10–40 minutes
+- ~20 GB free disk while running (Ollama's image is large) and 10–40 minutes
+- For fair numbers, pause other heavy work on the machine (transcodes, backups, games) while it runs
 
 ## Install and run
 

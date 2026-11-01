@@ -7,11 +7,12 @@
 # each, samples CPU/RAM once per second, prints a summary, saves a JSON file under
 # ~/.selfhostbench/results/ and, only if you say yes after seeing the exact JSON,
 # submits it. Everything it creates is removed at the end.
-"""SelfHostBench benchmark script."""
+"""SelfHostBench: measure how self-hosted apps (Ollama, Jellyfin, Immich) run on this machine."""
 
 import argparse
 import atexit
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -19,6 +20,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -26,9 +28,10 @@ import tarfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,15 +47,17 @@ IMAGES = {
     "jellyfin": "jellyfin/jellyfin:12.4.20261026-211555@sha256:fea863d0cd9ec445985d9c75fc6ed64e38a1d2766cf0c250a33d553f4fc1b771",
     "immich": "ghcr.io/immich-app/immich-machine-learning:v3.3.5@sha256:5b28c9352c8374b8a1ed96fbdd8d6755fea6e43510ec43fdf6538aa02ea40f56",
 }
+# Compressed image download sizes in MB (amd64, arm64), used for the download progress bar.
+IMAGE_MB = {"ollama": (3394, 2845), "jellyfin": (751, 420), "immich": (268, 240)}
 MEDIA = {
     "clip": {"file": "shb-clip-4k-hevc-v1.mkv", "sha256": "b510b072b40ebe939c27f39e40a1f05557f92931dafb466a6d65f2818999c416", "mb": 28},
     "photos": {"file": "shb-photos-v1.tar", "sha256": "9c497f1f2d119fed02ddcfb05c8cfa742ace184572944a19987e02fb2871b68a", "mb": 108},
 }
 # Rough sizes for the preflight list (compressed download incl. models/media, MB, x86_64) and run time (minutes).
 PLAN = {
-    "ollama": {"name": "Ollama (local AI chat)", "download_mb": 5400, "minutes": "2-10"},
-    "jellyfin": {"name": "Jellyfin video transcoding", "download_mb": 800, "minutes": "3-15"},
-    "immich": {"name": "Immich machine learning", "download_mb": 1300, "minutes": "3-15"},
+    "ollama": {"name": "Ollama (local AI chat)", "download_mb": 5400, "minutes": (2, 10)},
+    "jellyfin": {"name": "Jellyfin video transcoding", "download_mb": 800, "minutes": (3, 15)},
+    "immich": {"name": "Immich photo AI (search + faces)", "download_mb": 1300, "minutes": (3, 15)},
 }
 
 OLLAMA_MODEL = "llama3.2:3b-instruct-q4_K_M"
@@ -65,6 +70,7 @@ OLLAMA_OPTIONS = {"seed": 42, "temperature": 0, "num_predict": 256, "num_ctx": 2
 OLLAMA_RUNS = 3
 
 FFMPEG = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
+CLIP_SECONDS = 30
 SCALE_W, SCALE_H = 1920, 1080
 X264 = ["-c:v", "libx264", "-preset", "veryfast", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "16M"]
 CONCURRENCY_CAP = 8
@@ -81,28 +87,135 @@ CREATED = {"containers": [], "volumes": []}
 ASSUME_YES = False
 
 
-# ---------------------------------------------------------------- small helpers
+# ---------------------------------------------------------------- terminal output
+
+TTY = sys.stdout.isatty()
+COLOR = TTY and not os.environ.get("NO_COLOR") and os.environ.get("TERM", "") != "dumb"
+UTF8 = (sys.stdout.encoding or "").lower().replace("-", "") == "utf8"
+TICK, CROSS, BULLET = ("✓", "✗", "•") if UTF8 else ("+", "x", "*")
+BAR_FULL, BAR_EMPTY = ("█", "░") if UTF8 else ("#", "-")
+SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" if UTF8 else "|/-\\"
+OUT_LOCK = threading.Lock()
+
+
+def paint(code, s):
+    return f"\033[{code}m{s}\033[0m" if COLOR else str(s)
+
+
+def bold(s):
+    return paint("1", s)
+
+
+def dim(s):
+    return paint("2", s)
+
+
+def green(s):
+    return paint("32", s)
+
+
+def yellow(s):
+    return paint("33", s)
+
+
+def red(s):
+    return paint("31", s)
+
 
 def say(msg=""):
-    print(msg, flush=True)
+    with OUT_LOCK:
+        print(msg, flush=True)
 
 
-def step(msg):
-    say(f"\n==> {msg}")
+def heading(msg):
+    say(f"\n{bold(msg)}")
+
+
+def note(msg):
+    say(f"  {dim(msg)}")
+
+
+def warn(msg):
+    say(f"  {yellow('!')} {msg}")
+
+
+def fmt_secs(s):
+    s = int(s)
+    return f"{s // 3600}h {s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def fmt_bytes(n):
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+class Status:
+    """A live status line (spinner, optional progress bar) that ends as a ✓ or ✗ line."""
+
+    def __init__(self, label):
+        self.label, self.frac, self.detail = label, None, ""
+        self.t0 = time.monotonic()
+        self.stop = threading.Event()
+        self.plain_pct = -1
+
+    def __enter__(self):
+        if TTY:
+            threading.Thread(target=self._tick, daemon=True).start()
+        else:
+            say(f"  ... {self.label}")
+        return self
+
+    def _tick(self):
+        while not self.stop.wait(0.12):
+            self._draw()
+
+    def _draw(self):
+        elapsed = time.monotonic() - self.t0
+        spin = SPIN[int(elapsed * 10) % len(SPIN)]
+        bar = ""
+        if self.frac is not None:
+            filled = int(24 * max(0.0, min(1.0, self.frac)))
+            bar = f"{BAR_FULL * filled}{BAR_EMPTY * (24 - filled)} {int(100 * self.frac):3d}%  "
+        line = f"  {spin} {self.label}  {bar}{self.detail}"
+        width = shutil.get_terminal_size((80, 20)).columns - 8
+        line = line[:width] + f"  {fmt_secs(elapsed)}"
+        with OUT_LOCK:
+            sys.stdout.write("\r\033[2K" + paint("36", line))
+            sys.stdout.flush()
+
+    def update(self, frac=None, detail=None):
+        self.frac = frac
+        if detail is not None:
+            self.detail = detail
+        if not TTY and frac is not None and int(frac * 4) > self.plain_pct:
+            self.plain_pct = int(frac * 4)
+            say(f"      {int(100 * frac)}% {self.detail}")
+
+    def __exit__(self, exc_type, exc, tb):
+        self.stop.set()
+        with OUT_LOCK:
+            if TTY:
+                sys.stdout.write("\r\033[2K")
+            mark = green(TICK) if exc_type is None else red(CROSS)
+            print(f"  {mark} {self.label} {dim('(' + fmt_secs(time.monotonic() - self.t0) + ')')}", flush=True)
+        return False
+
+
+def result_line(msg):
+    say(f"    {bold(msg)}")
 
 
 def ask(question, default=False):
-    if ASSUME_YES:
-        return default if "Submit" in question or "Keep" in question else True
-    if not sys.stdin.isatty():
+    if ASSUME_YES or not sys.stdin.isatty():
         return default
     suffix = " [Y/n] " if default else " [y/N] "
     try:
-        ans = input(question + suffix).strip().lower()
+        ans = input(bold(question) + suffix).strip().lower()
     except EOFError:
         return default
     return default if not ans else ans in ("y", "yes")
 
+
+# ---------------------------------------------------------------- small helpers
 
 def run(cmd, check=True, timeout=None, capture=True):
     p = subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
@@ -202,12 +315,12 @@ def detect_hardware():
             if len(parts) >= 4 and re.search(r"VGA|3D|Display", parts[1]):
                 gpus.append(f"{parts[2]} {parts[3]}"[:100])
     nvsmi = shutil.which("nvidia-smi") or ("/usr/lib/wsl/lib/nvidia-smi" if os.path.exists("/usr/lib/wsl/lib/nvidia-smi") else None)
+    nv_names = []
     if nvsmi:
-        for name in run([nvsmi, "--query-gpu=name", "--format=csv,noheader"], check=False).stdout.splitlines():
-            if name.strip() and not any(name.strip() in g for g in gpus):
-                gpus.append(name.strip()[:100])
+        nv_names = [n.strip() for n in run([nvsmi, "--query-gpu=name", "--format=csv,noheader"], check=False).stdout.splitlines() if n.strip()]
+        gpus += [n[:100] for n in nv_names if not any(n in g for g in gpus)]
     info["gpus"] = gpus[:4]
-    info["nvidia"] = bool(nvsmi and gpus)
+    info["nvidia"] = bool(nv_names)
     info["dri_render_nodes"] = len(list(Path("/dev/dri").glob("renderD*"))) if Path("/dev/dri").exists() else 0
     info["docker_version"] = docker("version", "--format", "{{.Server.Version}}", check=False).stdout.strip()[:30]
     info["docker_os"] = docker("info", "--format", "{{.OperatingSystem}}", check=False).stdout.strip()[:60]
@@ -217,10 +330,12 @@ def detect_hardware():
         label = f"WSL2 on {info['cpu_short']}"
     elif info["virtualization"] not in ("none", ""):
         label = f"VM ({info['virtualization']}) on {info['cpu_short']}"
-    elif product.lower() in GENERIC or vendor.lower() in GENERIC:
+    elif product.lower() in GENERIC:
         label = f"Custom PC with {info['cpu_short']}"
+    elif vendor.lower() in GENERIC or product.lower().startswith(vendor.lower().split()[0]):
+        label = product  # e.g. "Raspberry Pi 5 Model B Rev 1.0", or vendor already in the name
     else:
-        label = product if product.lower().startswith(vendor.lower().split()[0] if vendor else "\0") else f"{vendor} {product}"
+        label = f"{vendor} {product}"
     info["device_label"] = re.sub(r"\s+", " ", label).strip()[:100]
     return info
 
@@ -251,7 +366,7 @@ class Sampler:
         self.zone = rapl_zone()
         self.energy0 = self.t0 = None
         self.proc = None
-        self.thread = None
+        self.result = {}
 
     def _energy(self):
         try:
@@ -264,8 +379,7 @@ class Sampler:
             self.energy0, self.t0 = self._energy(), time.monotonic()
         self.proc = subprocess.Popen(["docker", "stats", "--format", "{{json .}}", self.container],
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        self.thread = threading.Thread(target=self._read, daemon=True)
-        self.thread.start()
+        threading.Thread(target=self._read, daemon=True).start()
         return self
 
     def _read(self):
@@ -316,8 +430,10 @@ def parse_size(s):
 
 def start_container(name, image, args=(), cmd=()):
     full = f"shb-{name}-{RUN_ID}"
-    docker("run", "-d", "--name", full, "--label", LABEL, *args, image, *cmd)
-    CREATED["containers"].append(full)
+    try:
+        docker("run", "-d", "--name", full, "--label", LABEL, *args, image, *cmd)
+    finally:
+        CREATED["containers"].append(full)  # remove even a half-created container
     return full
 
 
@@ -348,10 +464,75 @@ def image_digest(image):
     return digests[0].split("@", 1)[1] if digests else image.split("@", 1)[-1]
 
 
-def ensure_image(image):
-    if docker("image", "inspect", image, check=False).returncode != 0:
-        say(f"    pulling {image.split('@')[0]} …")
-        run(["docker", "pull", "-q", image], timeout=3600)
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.unix_path)
+
+
+def docker_socket():
+    host = os.environ.get("DOCKER_HOST") or docker(
+        "context", "inspect", "--format", "{{.Endpoints.docker.Host}}", check=False).stdout.strip()
+    path = host[len("unix://"):] if host.startswith("unix://") else ""
+    return path if path and os.access(path, os.R_OK | os.W_OK) else None
+
+
+def pull_via_api(image, st, expected):
+    """Pull through the Docker Engine API so we can show byte-level progress."""
+    sock = docker_socket()
+    if not sock:
+        return False
+    ref, digest = image.split("@")
+    repo = ref.rsplit(":", 1)[0] if ":" in ref.rsplit("/", 1)[-1] else ref
+    conn = UnixHTTPConnection(sock, timeout=3600)
+    conn.request("POST", "/images/create?" + urllib.parse.urlencode({"fromImage": repo, "tag": digest}))
+    r = conn.getresponse()
+    if r.status != 200:
+        return False
+    layers = {}
+    while True:
+        line = r.readline()
+        if not line:
+            break
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if "error" in d:
+            raise RuntimeError(f"pull failed: {d['error']}")
+        lid, status, pd = d.get("id"), d.get("status", ""), d.get("progressDetail") or {}
+        if status == "Downloading" and pd.get("total"):
+            layers[lid] = [pd.get("current", 0), pd["total"]]
+        elif status in ("Download complete", "Pull complete") and lid in layers:
+            layers[lid][0] = layers[lid][1]
+        # Docker only reports sizes for layers in flight, so measure progress against the known image size.
+        done = sum(c for c, _ in layers.values())
+        if status == "Extracting":
+            st.update(None, f"unpacking … ({fmt_bytes(done)} downloaded)")
+        elif done:
+            st.update(min(0.99, done / expected), f"{fmt_bytes(done)} of ~{fmt_bytes(expected)}")
+    conn.close()
+    return docker("image", "inspect", image, check=False).returncode == 0
+
+
+def ensure_image(app):
+    image = IMAGES[app]
+    if docker("image", "inspect", image, check=False).returncode == 0:
+        return
+    expected = IMAGE_MB[app][platform.machine() in ("aarch64", "arm64")] * 1e6
+    with Status(f"Downloading {image.split('@')[0]}") as st:
+        try:
+            ok = pull_via_api(image, st, expected)
+        except (OSError, http.client.HTTPException):
+            ok = False
+        if not ok:
+            st.update(None, "(docker pull)")
+            run(["docker", "pull", "-q", image], timeout=3600)
 
 
 # ---------------------------------------------------------------- media
@@ -361,12 +542,18 @@ def fetch_media(key):
     cache = HOME / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     dest = cache / meta["file"]
-    if not dest.exists() or sha256(dest) != meta["sha256"]:
-        say(f"    downloading {meta['file']} (~{meta['mb']} MB) …")
+    if dest.exists() and sha256(dest) == meta["sha256"]:
+        return dest
+    with Status(f"Downloading test media {meta['file']}") as st:
         tmp = dest.with_suffix(".part")
         req = urllib.request.Request(f"{RELEASE}/{meta['file']}", headers={"User-Agent": f"selfhostbench/{VERSION}"})
         with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f, 1 << 20)
+            total = int(r.headers.get("Content-Length") or meta["mb"] * 1e6)
+            done = 0
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                f.write(chunk)
+                done += len(chunk)
+                st.update(done / total, f"{fmt_bytes(done)} of {fmt_bytes(total)}")
         if sha256(tmp) != meta["sha256"]:
             tmp.unlink()
             raise RuntimeError(f"{meta['file']} failed its SHA-256 check")
@@ -386,52 +573,57 @@ def sha256(path):
 
 def test_ollama(hw, use_gpu):
     image = IMAGES["ollama"]
-    ensure_image(image)
+    ensure_image("ollama")
     vol = make_volume("ollama")
     args = ["-p", "127.0.0.1::11434", "-v", f"{vol}:/root/.ollama"]
     name, accel = None, "cpu"
-    if use_gpu and hw["nvidia"]:
-        try:
-            name = start_container("ollama", image, ["--gpus", "all", *args])
-            accel = "nvidia"
-        except RuntimeError as e:
-            say(f"    GPU not available to Docker ({str(e)[-120:]}); using CPU")
-    if not name:
-        name = start_container("ollama", image, args)
-    base = f"http://127.0.0.1:{host_port(name, 11434)}"
-    wait_http(f"{base}/api/version")
-    say(f"    pulling model {OLLAMA_MODEL} (~2 GB) …")
-    req = urllib.request.Request(f"{base}/api/pull", data=json.dumps({"model": OLLAMA_MODEL}).encode(),
-                                 headers={"Content-Type": "application/json"})
-    last = -10
-    with urllib.request.urlopen(req, timeout=3600) as r:
-        for line in r:
-            d = json.loads(line)
-            if "error" in d:
-                raise RuntimeError(f"model pull failed: {d['error']}")
-            if d.get("total") and d.get("completed"):
-                pct = int(100 * d["completed"] / d["total"])
-                if pct >= last + 10:
-                    say(f"      {pct}%")
-                    last = pct
+    with Status("Starting Ollama"):
+        if use_gpu and hw["nvidia"]:
+            try:
+                name = start_container("ollama-gpu", image, ["--gpus", "all", *args])
+                accel = "nvidia"
+            except RuntimeError as e:
+                warn(f"NVIDIA GPU not available to Docker, using CPU ({str(e)[-100:]})")
+        if not name:
+            name = start_container("ollama", image, args)
+        base = f"http://127.0.0.1:{host_port(name, 11434)}"
+        wait_http(f"{base}/api/version")
+    with Status(f"Downloading AI model {OLLAMA_MODEL}") as st:
+        req = urllib.request.Request(f"{base}/api/pull", data=json.dumps({"model": OLLAMA_MODEL}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        parts = {}
+        with urllib.request.urlopen(req, timeout=3600) as r:
+            for line in r:
+                d = json.loads(line)
+                if "error" in d:
+                    raise RuntimeError(f"model download failed: {d['error']}")
+                if d.get("digest") and d.get("total"):
+                    parts[d["digest"]] = (d.get("completed") or 0, d["total"])
+                    done, total = sum(c for c, _ in parts.values()), sum(t for _, t in parts.values())
+                    st.update(done / total, f"{fmt_bytes(done)} of {fmt_bytes(total)}")
+                elif d.get("status"):
+                    st.update(st.frac, d["status"][:30])
     digest = next((m.get("digest", "") for m in http_json(f"{base}/api/tags")["models"]
                    if m.get("name") == OLLAMA_MODEL), "")
     gen = {"model": OLLAMA_MODEL, "prompt": OLLAMA_PROMPT, "stream": False, "options": OLLAMA_OPTIONS}
-    say("    warm-up run (loads the model) …")
-    http_json(f"{base}/api/generate", dict(gen, options=dict(OLLAMA_OPTIONS, num_predict=8)), timeout=1800)
-    ps = http_json(f"{base}/api/ps").get("models", [{}])
+    with Status("Loading the model (warm-up, not timed)"):
+        http_json(f"{base}/api/generate", dict(gen, options=dict(OLLAMA_OPTIONS, num_predict=8)), timeout=1800)
+        ps = http_json(f"{base}/api/ps").get("models", [{}])
     size, vram = (ps[0].get("size") or 0, ps[0].get("size_vram") or 0) if ps else (0, 0)
     offload = round(100 * vram / size) if size else 0
     if accel == "nvidia" and offload == 0:
         accel = "cpu"  # container had the GPU but the model ran on CPU
     tps, ptps = [], []
-    with Sampler(name) as s:
+    where = f"NVIDIA GPU, {offload}% of model in VRAM" if accel == "nvidia" else "CPU"
+    with Status(f"Generating text, {OLLAMA_RUNS} runs ({where})") as st, Sampler(name) as s:
         for i in range(OLLAMA_RUNS):
+            st.update(i / OLLAMA_RUNS, f"run {i + 1} of {OLLAMA_RUNS}"
+                      + (f"  last: {tps[-1]:.1f} tokens/s" if tps else ""))
             r = http_json(f"{base}/api/generate", gen, timeout=1800)
             tps.append(r["eval_count"] / r["eval_duration"] * 1e9)
             if r.get("prompt_eval_duration"):
                 ptps.append(r["prompt_eval_count"] / r["prompt_eval_duration"] * 1e9)
-            say(f"    run {i + 1}/{OLLAMA_RUNS}: {tps[-1]:.1f} tokens/s")
+    result_line(f"{statistics.median(tps):.1f} tokens/s  " + dim(f"(runs: {', '.join(f'{x:.1f}' for x in tps)})"))
     return [{
         "app": "ollama", "test": "generate", "accel": accel, "image": image.split("@")[0],
         "image_digest": image_digest(image), "status": "ok",
@@ -482,48 +674,66 @@ def transcode_cmd(name, method, seconds=None):
     return cmd + ["-f", "null", "-"]
 
 
-def run_streams(name, method, n, seconds, timeout):
+def run_streams(name, method, n, seconds, timeout, st=None):
+    """Run n transcodes at once; returns ffmpeg's final stats for each, or None if any failed or timed out."""
     procs = [subprocess.Popen(transcode_cmd(name, method, seconds), stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, text=True) for _ in range(n)]
-    results = []
+                              stderr=subprocess.DEVNULL, text=True) for _ in range(n)]
+    state = [{"t": 0.0, "speed": "", "lines": []} for _ in procs]
+
+    def reader(i, p):
+        for line in p.stdout:
+            state[i]["lines"].append(line)
+            k, _, v = line.strip().partition("=")
+            if k == "out_time_us" and v.lstrip("-").isdigit():
+                state[i]["t"] = max(0, int(v)) / 1e6
+            elif k == "speed":
+                state[i]["speed"] = v
+
+    threads = [threading.Thread(target=reader, args=(i, p), daemon=True) for i, p in enumerate(procs)]
+    for t in threads:
+        t.start()
+    target = seconds or CLIP_SECONDS
     deadline = time.monotonic() + timeout
-    for p in procs:
-        try:
-            out, _ = p.communicate(timeout=max(1, deadline - time.monotonic()))
-            results.append(ffmpeg_progress(out))
-        except subprocess.TimeoutExpired:
-            results.append(None)
-    for p in procs:
-        if p.poll() is None:
+    while any(p.poll() is None for p in procs) and time.monotonic() < deadline:
+        if st:
+            slowest = min(state, key=lambda s: s["t"])
+            speed = slowest["speed"] if slowest["speed"] not in ("", "N/A") else "…"
+            st.update(min(1.0, slowest["t"] / target), f"speed {speed}"
+                      + (" (slowest stream)" if n > 1 else ""))
+        time.sleep(0.25)
+    timed_out = any(p.poll() is None for p in procs)
+    for t in threads:
+        t.join(timeout=5)
+    if timed_out:
+        for p in procs:
             p.kill()
-    if any(r is None for r in results):
-        # Too slow to finish in time, or a crash: kill leftover ffmpeg inside the container.
-        docker("exec", name, "pkill", "-f", "jellyfin-ffmpeg", check=False)
+        docker("restart", "-t", "0", name, check=False)  # kills leftover ffmpeg processes inside the container
         return None
-    return results
+    results = [ffmpeg_progress("".join(s["lines"])) for s in state]
+    return None if any(r is None for r in results) else results
 
 
 def test_jellyfin(hw, use_gpu):
     image = IMAGES["jellyfin"]
-    ensure_image(image)
+    ensure_image("jellyfin")
     clip = fetch_media("clip")
-    args = ["--entrypoint", "/bin/sleep", "-v", f"{clip}:/media/clip.mkv:ro"]
-    hw_method = None
+    base_args = ["--entrypoint", "/bin/sleep", "-v", f"{clip}:/media/clip.mkv:ro"]
+    hw_method, hw_args = None, []
     if use_gpu and hw["dri_render_nodes"] and Path("/dev/dri/renderD128").exists():
         hw_method = "vaapi"
-        args += ["--device", "/dev/dri:/dev/dri", "--group-add", str(os.stat("/dev/dri/renderD128").st_gid)]
+        hw_args = ["--device", "/dev/dri:/dev/dri", "--group-add", str(os.stat("/dev/dri/renderD128").st_gid)]
     elif use_gpu and hw["nvidia"]:
         hw_method = "nvenc"
-        args += ["--gpus", "all", "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,video,utility"]
-    try:
-        name = start_container("jellyfin", image, args, ["infinity"])
-    except RuntimeError:
-        if not hw_method:
-            raise
-        say(f"    could not pass the GPU through ({hw_method}); software only")
-        hw_method = None
-        name = start_container("jellyfin", image, ["--entrypoint", "/bin/sleep", "-v", f"{clip}:/media/clip.mkv:ro"],
-                               ["infinity"])
+        hw_args = ["--gpus", "all", "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,video,utility"]
+    with Status("Starting Jellyfin"):
+        try:
+            name = start_container("jellyfin", image, base_args + hw_args, ["infinity"])
+        except RuntimeError:
+            if not hw_method:
+                raise
+            warn(f"could not pass the GPU through ({hw_method}); testing the CPU only")
+            hw_method = None
+            name = start_container("jellyfin-cpu", image, base_args, ["infinity"])
     digest = image_digest(image)
     out = []
 
@@ -534,32 +744,39 @@ def test_jellyfin(hw, use_gpu):
 
     for method in ["software"] + ([hw_method] if hw_method else []):
         accel = "cpu" if method == "software" else method
-        label = "software (CPU)" if method == "software" else f"hardware ({method})"
-        say(f"    4K HEVC -> 1080p H.264, {label} …")
+        label = "CPU" if method == "software" else {"vaapi": "VA-API GPU", "nvenc": "NVIDIA NVENC"}[method]
         # Short warm-up so one-off start-up costs (e.g. GPU driver JIT) don't count against the result.
-        if not run_streams(name, method, 1, 2, timeout=900):
+        with Status(f"Warming up ({label})"):
+            ok = run_streams(name, method, 1, 2, timeout=900)
+        if not ok:
             record("transcode_4k_1080p", accel, {}, {}, "failed", f"{method} warm-up did not complete")
-            say("      failed")
+            warn(f"{label} transcoding failed; skipping it")
             continue
-        with Sampler(name) as s:
-            r = run_streams(name, method, 1, None, timeout=1800)
+        with Status(f"Converting 4K video to 1080p ({label})") as st, Sampler(name) as s:
+            r = run_streams(name, method, 1, None, timeout=1800, st=st)
         if not r:
-            record("transcode_4k_1080p", accel, {}, s.result, "failed",
-                   f"{method} transcode did not complete")
-            say(f"      failed")
+            record("transcode_4k_1080p", accel, {}, s.result, "failed", f"{method} transcode did not complete")
+            warn(f"{label} transcoding failed")
             continue
-        say(f"      {r[0]['fps']:.1f} fps ({r[0]['speed']:.2f}x real time)")
-        record("transcode_4k_1080p", accel, {"fps": r[0]["fps"], "speed": r[0]["speed"]}, s.result)
-        say(f"    simultaneous 4K -> 1080p streams at >= 1x real time, {label} …")
+        r = r[0]
+        result_line(f"{r['fps']:.1f} fps, {r['speed']:.2f}x real time")
+        record("transcode_4k_1080p", accel, {"fps": r["fps"], "speed": r["speed"]}, s.result)
+        if r["speed"] < 1.0:
+            # Can't keep up with even one stream, so there's nothing to step up.
+            record("concurrent_streams", accel, {"streams": 0, "cap": CONCURRENCY_CAP}, s.result)
+            note("Below real time, so simultaneous streams = 0 (skipped the step-up test)")
+            continue
         best = 0
-        with Sampler(name) as s:
+        with Status(f"Simultaneous streams at >= 1x real time ({label})") as st, Sampler(name) as s:
             for n in range(1, CONCURRENCY_CAP + 1):
-                res = run_streams(name, method, n, CONCURRENCY_SECONDS, timeout=CONCURRENCY_SECONDS * 6)
+                st.label = f"Simultaneous streams ({label}): trying {n}"
+                res = run_streams(name, method, n, CONCURRENCY_SECONDS, timeout=CONCURRENCY_SECONDS * 6, st=st)
                 slowest = min(x["speed"] for x in res) if res else 0
-                say(f"      {n} stream(s): slowest {slowest:.2f}x")
                 if slowest < 1.0:
                     break
                 best = n
+            st.label = f"Simultaneous streams at >= 1x real time ({label})"
+        result_line(f"{best}{'+' if best >= CONCURRENCY_CAP else ''} stream(s) at once")
         record("concurrent_streams", accel, {"streams": best, "cap": CONCURRENCY_CAP}, s.result)
     return out
 
@@ -585,7 +802,7 @@ def immich_predict(base, entries, image_bytes, timeout=60):
 
 def test_immich(hw, use_gpu):
     image = IMAGES["immich"]
-    ensure_image(image)
+    ensure_image("immich")
     tar = fetch_media("photos")
     photos = []
     with tarfile.open(tar) as t:
@@ -593,41 +810,90 @@ def test_immich(hw, use_gpu):
             if m.isfile() and m.name.lower().endswith(".jpg"):
                 photos.append(t.extractfile(m).read())
     vol = make_volume("immich")
-    name = start_container("immich", image, ["-p", "127.0.0.1::3003", "-v", f"{vol}:/cache",
-                                             "-e", "MACHINE_LEARNING_MODEL_TTL=0"])
-    base = f"http://127.0.0.1:{host_port(name, 3003)}"
-    wait_http(f"{base}/ping", 180)
+    with Status("Starting Immich machine learning"):
+        name = start_container("immich", image, ["-p", "127.0.0.1::3003", "-v", f"{vol}:/cache",
+                                                 "-e", "MACHINE_LEARNING_MODEL_TTL=0"])
+        base = f"http://127.0.0.1:{host_port(name, 3003)}"
+        wait_http(f"{base}/ping", 180)
     tasks = {
-        "clip_embeddings": {"clip": {"visual": {"modelName": IMMICH_CLIP_MODEL}}},
-        "face_detection": {"facial-recognition": {
+        "clip_embeddings": ("Smart search (CLIP)", {"clip": {"visual": {"modelName": IMMICH_CLIP_MODEL}}}),
+        "face_detection": ("Face detection", {"facial-recognition": {
             "detection": {"modelName": IMMICH_FACE_MODEL, "options": {"minScore": IMMICH_FACE_MIN_SCORE}},
-            "recognition": {"modelName": IMMICH_FACE_MODEL}}},
+            "recognition": {"modelName": IMMICH_FACE_MODEL}}}),
     }
     digest = image_digest(image)
     out = []
-    for test, entries in tasks.items():
-        say(f"    {test.replace('_', ' ')}: downloading model and warming up …")
-        immich_predict(base, entries, photos[0], timeout=1800)
-        say(f"    {test.replace('_', ' ')}: {len(photos)} photos, {IMMICH_CONCURRENCY} at a time …")
-        faces = 0
-        with Sampler(name) as s:
+    for test, (label, entries) in tasks.items():
+        with Status(f"{label}: downloading and loading the model (not timed)"):
+            immich_predict(base, entries, photos[0], timeout=1800)
+        results = []
+        with Status(f"{label}: {len(photos)} photos, {IMMICH_CONCURRENCY} at a time") as st, Sampler(name) as s:
             t0 = time.monotonic()
             with ThreadPoolExecutor(IMMICH_CONCURRENCY) as pool:
-                results = list(pool.map(lambda b: immich_predict(base, entries, b, timeout=300), photos))
+                futures = [pool.submit(immich_predict, base, entries, b, 300) for b in photos]
+                for f in as_completed(futures):
+                    results.append(f.result())
+                    st.update(len(results) / len(photos), f"{len(results)} of {len(photos)} photos")
             elapsed = time.monotonic() - t0
-        if test == "face_detection":
-            faces = sum(len(r.get("facial-recognition", [])) for r in results)
         ips = len(photos) / elapsed
-        say(f"      {ips:.2f} images/s" + (f", {faces} faces found" if test == "face_detection" else ""))
         metrics = {"images_per_s": round(ips, 2), "images": len(photos), "seconds": round(elapsed, 1)}
         if test == "face_detection":
-            metrics["faces_found"] = faces
+            metrics["faces_found"] = sum(len(r.get("facial-recognition", [])) for r in results)
+        result_line(f"{ips:.2f} photos/s" + (f", {metrics['faces_found']} faces found" if "faces_found" in metrics else ""))
         out.append({"app": "immich", "test": test, "accel": "cpu", "image": image.split("@")[0],
                     "image_digest": digest, "status": "ok", "metrics": metrics, "resources": s.result})
     return out
 
 
 TESTS = {"ollama": test_ollama, "jellyfin": test_jellyfin, "immich": test_immich}
+
+
+# ---------------------------------------------------------------- summary
+
+def verdict(t):
+    m = t["metrics"]
+    if t["test"] == "generate":
+        v = m["tokens_per_s"]
+        return ("fast: replies appear instantly" if v >= 30 else "comfortable for chat" if v >= 10
+                else "usable but slow" if v >= 4 else "too slow for comfortable chat")
+    if t["test"] == "transcode_4k_1080p":
+        return ("keeps up with a 4K stream" if m["speed"] >= 1 else "too slow for live 4K: use direct play")
+    if t["test"] == "concurrent_streams":
+        n = m["streams"]
+        return ("can't sustain one 4K->1080p stream" if n == 0
+                else f"{n}+ people streaming at once (test stops at {m['cap']})" if n >= m["cap"]
+                else f"{n} {'person' if n == 1 else 'people'} streaming at once")
+    hours = 10000 / m["images_per_s"] / 3600 if m["images_per_s"] else 0
+    return f"about {hours * 60:.0f} min per 10,000 photos" if hours < 1.5 else f"about {hours:.1f} h per 10,000 photos"
+
+
+VIRT_NAMES = {"wsl": "WSL2", "kvm": "a KVM virtual machine", "docker": "a container", "lxc": "an LXC container"}
+
+
+def summary(doc):
+    labels = {"generate": "chat speed", "transcode_4k_1080p": "4K -> 1080p",
+              "concurrent_streams": "simultaneous streams", "clip_embeddings": "smart search",
+              "face_detection": "face detection"}
+    accels = {"cpu": "CPU", "nvidia": "GPU", "nvenc": "NVENC", "vaapi": "VA-API", "qsv": "QSV", "none": ""}
+    heading(f"Results for {doc['hardware']['device_label']}")
+    rows = []
+    for t in doc["tests"]:
+        m = t["metrics"]
+        name = f"{t['app'].capitalize()} {labels.get(t['test'], t['test'])}" + (f" ({accels.get(t['accel'], t['accel'])})" if t["accel"] != "none" else "")
+        if t["status"] != "ok":
+            rows.append((name, red(t["status"]), (t.get("reason") or "")[:60]))
+            continue
+        val = (f"{m['tokens_per_s']:.1f} tokens/s" if "tokens_per_s" in m else f"{m['fps']:.1f} fps" if "fps" in m
+               else f"{m['streams']}{'+' if m['streams'] >= m['cap'] else ''} streams" if "streams" in m
+               else f"{m['images_per_s']:.2f} photos/s")
+        rows.append((name, val, verdict(t)))
+    w0 = max(len(r[0]) for r in rows) + 2
+    w1 = max(len(re.sub(r"\x1b\[[0-9;]*m", "", r[1])) for r in rows) + 2
+    for a, b, c in rows:
+        pad = w1 - len(re.sub(r"\x1b\[[0-9;]*m", "", b))
+        say(f"  {a:<{w0}}{bold(b)}{' ' * pad}{dim(c)}")
+    if doc["hardware"]["virtualization"] != "none":
+        note(f"Ran inside {VIRT_NAMES.get(doc['hardware']['virtualization'], 'a VM')}: bare-metal numbers may be higher.")
 
 
 # ---------------------------------------------------------------- submission
@@ -650,67 +916,67 @@ def submit(doc, api=API_BASE):
         except (urllib.error.URLError, OSError) as e:
             err = str(e)
         if attempt == 1:
-            say(f"    submission failed ({err}); retrying in 5 s …")
+            warn(f"submission failed ({err}); retrying in 5 s")
             time.sleep(5)
     raise RuntimeError(err)
 
 
 def offer_submit(doc, path, api, confirmed=False):
-    say("\nThis is exactly what would be sent:\n")
+    heading("Share your results?")
+    say("  Here is exactly what would be sent. Nothing else is collected: no hostname, IP, serials or paths.\n")
     say(json.dumps(doc, indent=2))
-    if not confirmed and not ask("\nSubmit these results?", default=False):
-        say(f"Not submitted. To submit later: selfhostbench submit {path}")
+    say("")
+    if not confirmed and not ask(f"Submit these results to {api.split('//')[-1]}? They will be public.", default=False):
+        note(f"Not submitted. To submit later: python3 {sys.argv[0]} submit {path}")
         return
     try:
         r = submit(doc, api)
-        say(f"Submitted. Your result: {r.get('url', r)}")
+        say(f"  {green(TICK)} Submitted, thank you!")
+        say(f"    Your result:        {bold(r.get('url', ''))}")
+        if r.get("device_url"):
+            say(f"    Your device's page: {r['device_url']}")
+            note("Sign up on that page to hear when more people with this device submit.")
     except RuntimeError as e:
-        say(f"Could not submit ({e}).\nYour results are saved in {path}\nTo try again later: selfhostbench submit {path}")
+        warn(f"Could not submit ({e}).")
+        note(f"Your results are saved in {path}")
+        note(f"To try again later: python3 {sys.argv[0]} submit {path}")
 
 
 # ---------------------------------------------------------------- main
 
-def preflight(apps):
+def preflight(apps, hw):
     if not shutil.which("docker"):
         sys.exit("Docker is required but the `docker` command was not found. Install Docker, then run again.")
     p = docker("info", "--format", "{{.ServerVersion}}", check=False)
     if p.returncode != 0:
         hint = ""
         if "permission denied" in (p.stderr or "").lower():
-            hint = ("\nYour user cannot reach the Docker socket. Either run `sudo usermod -aG docker $USER` "
-                    "and log in again, or run this script with sudo.")
+            hint = ("\n\nYour user can't talk to Docker. Fix it with:\n  sudo usermod -aG docker $USER\n"
+                    "then log out and back in (or run: newgrp docker), and run this again.")
         sys.exit(f"Docker is installed but not reachable: {p.stderr.strip()[:300]}{hint}")
+    say(f"\n{bold('SelfHostBench ' + VERSION)}  {dim('measures how self-hosted apps run on this machine')}")
+    say(f"\n  {bold('This machine:')} {hw['device_label']} · {hw['cpu_threads']} threads · {hw['ram_gb']} GB RAM"
+        + (f" · {', '.join(hw['gpus'])}" if hw["gpus"] else ""))
+    if hw["virtualization"] != "none":
+        note(f"Running inside {VIRT_NAMES.get(hw['virtualization'], 'a VM')}; results will be labelled as such.")
+    say(f"\n  {bold('It will test:')}")
+    w = max(len(PLAN[a]["name"]) for a in apps) + 3
+    for i, a in enumerate(apps, 1):
+        lo, hi = PLAN[a]["minutes"]
+        say(f"    {i}. {PLAN[a]['name']:<{w}}~{PLAN[a]['download_mb'] / 1000:.1f} GB download   {lo}-{hi} min")
+    total_gb = sum(PLAN[a]["download_mb"] for a in apps) / 1000
+    lo, hi = sum(PLAN[a]["minutes"][0] for a in apps), sum(PLAN[a]["minutes"][1] for a in apps)
+    say(f"       {'Total':<{w}}~{total_gb:.1f} GB download   {lo}-{hi} min")
     free_gb = shutil.disk_usage(Path.home()).free / 1e9
-    need = sum(PLAN[a]["download_mb"] for a in apps) / 1000 * 2.5 + 3
-    step("SelfHostBench will test:")
-    for a in apps:
-        say(f"    - {PLAN[a]['name']}: ~{PLAN[a]['download_mb'] / 1000:.1f} GB download, ~{PLAN[a]['minutes']} min")
-    say(f"    Free disk in your home directory: {free_gb:.0f} GB (needs roughly {need:.0f} GB while running)")
-    say("    Everything it creates is removed afterwards. Nothing is sent unless you say yes at the end.")
+    need = total_gb * 2.5 + 3
+    say(f"\n  Free disk: {free_gb:.0f} GB (needs about {need:.0f} GB while running).")
+    say("  Everything it creates is removed afterwards. Nothing is sent unless you say yes at the end.")
+    say(f"  {dim('Tip: for fair numbers, pause other heavy work (transcodes, backups, games) while it runs.')}")
     if free_gb < need:
-        say("    WARNING: free disk space looks too low (Docker may store images elsewhere).")
-    if not ask("Continue?", default=True):
+        warn("Free disk space looks low (Docker may store images elsewhere, so this may be fine).")
+    say("")
+    if not ask("Start the benchmark?", default=True):
         sys.exit(0)
-
-
-def summary(doc):
-    step("Results")
-    labels = {"generate": "chat generation", "transcode_4k_1080p": "4K->1080p transcode",
-              "concurrent_streams": "simultaneous 1080p streams", "clip_embeddings": "smart-search embeddings",
-              "face_detection": "face detection"}
-    for t in doc["tests"]:
-        m = t["metrics"]
-        if t["status"] != "ok":
-            val = f"{t['status']}: {t.get('reason') or ''}"
-        elif "tokens_per_s" in m:
-            val = f"{m['tokens_per_s']} tokens/s"
-        elif "fps" in m:
-            val = f"{m['fps']} fps ({m['speed']}x)"
-        elif "streams" in m:
-            val = f"{m['streams']} stream(s) at >= 1x" + (" (cap)" if m["streams"] >= m["cap"] else "")
-        else:
-            val = f"{m['images_per_s']} images/s"
-        say(f"    {t['app']:<9} {labels.get(t['test'], t['test']):<28} [{t['accel']}] {val}")
 
 
 def main_run(args):
@@ -720,26 +986,24 @@ def main_run(args):
     bad = [a for a in apps if a not in TESTS]
     if bad:
         sys.exit(f"unknown app(s): {', '.join(bad)}. Choose from: {', '.join(TESTS)}")
-    preflight(apps)
-    images_before = set(docker("image", "ls", "-q", "--no-trunc", check=False).stdout.split())
+    if not shutil.which("docker"):
+        sys.exit("Docker is required but the `docker` command was not found. Install Docker, then run again.")
     hw = detect_hardware()
-    step(f"Detected: {hw['device_label']} · {hw['cpu_threads']} threads · {hw['ram_gb']} GB RAM"
-         + (f" · GPU: {', '.join(hw['gpus'])}" if hw["gpus"] else ""))
-    if hw["virtualization"] != "none":
-        say(f"    Running under virtualisation ({hw['virtualization']}); results will be labelled as such.")
+    preflight(apps, hw)
+    images_before = set(docker("image", "ls", "-q", "--no-trunc", check=False).stdout.split())
     hw_public = {k: v for k, v in hw.items() if k != "nvidia"}
     doc = {"schema_version": SCHEMA_VERSION, "script_version": VERSION, "run_id": RUN_ID,
            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
            "hardware": hw_public, "tests": [], "duration_s": 0}
     t_all = time.monotonic()
     try:
-        for app in apps:
-            step(PLAN[app]["name"])
+        for i, app in enumerate(apps, 1):
+            heading(f"[{i}/{len(apps)}] {PLAN[app]['name']}")
             t0 = time.monotonic()
             try:
                 results = TESTS[app](hw, not args.no_gpu)
             except Exception as e:  # keep going with the other apps
-                say(f"    FAILED: {e}")
+                warn(red(f"{app} test failed: {e}"))
                 results = [{"app": app, "test": "all", "accel": "none", "image": IMAGES[app].split("@")[0],
                             "image_digest": IMAGES[app].split("@")[-1], "status": "failed",
                             "reason": str(e)[:300], "metrics": {}, "resources": {}}]
@@ -756,21 +1020,26 @@ def main_run(args):
     path = results_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{RUN_ID}.json"
     path.write_text(json.dumps(doc, indent=2))
     summary(doc)
-    say(f"\nSaved to {path}")
+    note(f"Finished in {fmt_secs(doc['duration_s'])}. Saved to {path}")
     if args.no_submit:
-        say(f"Not submitted (--no-submit). To submit later: selfhostbench submit {path}")
+        note(f"Not submitted (--no-submit). To submit later: python3 {sys.argv[0]} submit {path}")
     else:
         offer_submit(doc, path, args.api)
     new_images = [i for i in docker("image", "ls", "-q", "--no-trunc", check=False).stdout.split()
                   if i not in images_before]
+    sizes = sum(int(docker("image", "inspect", "--format", "{{.Size}}", i, check=False).stdout.strip() or 0)
+                for i in new_images)
     if new_images or (HOME / "cache").exists():
-        if args.keep_images or ask("Keep downloaded Docker images and test media for next time?", default=False):
-            say("Kept.")
+        say("")
+        if args.keep_images or ask(f"Keep the downloaded Docker images and test media (~{fmt_bytes(sizes)}) for next time?",
+                                   default=False):
+            note("Kept. Run again any time; nothing will need downloading.")
         else:
-            for i in set(new_images):
-                docker("rmi", "-f", i, check=False)
-            shutil.rmtree(HOME / "cache", ignore_errors=True)
-            say("Removed downloaded images and test media.")
+            with Status("Removing downloaded images and test media"):
+                for i in set(new_images):
+                    docker("rmi", "-f", i, check=False)
+                shutil.rmtree(HOME / "cache", ignore_errors=True)
+    say(f"\n{green(TICK)} All done. Containers and temporary data have been removed.\n")
 
 
 def main_submit(args):
@@ -785,8 +1054,7 @@ def main():
     p = argparse.ArgumentParser(prog="selfhostbench", description=__doc__)
     p.add_argument("--version", action="version", version=f"selfhostbench {VERSION}")
     sub = p.add_subparsers(dest="cmd")
-    for name in ("run", None):
-        sp = sub.add_parser("run", help="run the benchmark (default)") if name else p
+    for sp in (sub.add_parser("run", help="run the benchmark (default)"), p):
         sp.add_argument("--yes", "-y", action="store_true", help="skip prompts (does NOT auto-submit)")
         sp.add_argument("--apps", default=",".join(TESTS), help="comma-separated subset: ollama,jellyfin,immich")
         sp.add_argument("--no-submit", action="store_true", help="keep results local only")
@@ -803,7 +1071,7 @@ def main():
     try:
         main_submit(args) if args.cmd == "submit" else main_run(args)
     except KeyboardInterrupt:
-        say("\nInterrupted; cleaning up …")
+        say("\n\nInterrupted; cleaning up …")
         cleanup()
         sys.exit(130)
 

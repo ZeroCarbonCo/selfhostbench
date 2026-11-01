@@ -78,3 +78,20 @@ footer.site { border-top: 1px solid var(--line); margin-top: 48px; padding: 18px
 dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
 dl.kv dt { color: var(--muted); }
 dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+.hero { padding: 8px 0 4px; }
+.cta { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 8px; }
+a.button { display: inline-block; font-weight: 600; background: var(--accent); color: var(--accent-fg); text-decoration: none;
+  border-radius: 6px; padding: 10px 18px; }
+a.button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+ol.steps { padding-left: 1.3em; }
+ol.steps li { margin: 0 0 14px; padding-left: 4px; }
+ol.steps pre { margin: 8px 0 0; }
+pre.copy { position: relative; padding-right: 72px; }
+pre.copy button.copy-btn { position: absolute; top: 8px; right: 8px; font-size: .78rem; padding: 4px 10px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); font-weight: 500; }
+pre.sample { font-size: .8rem; line-height: 1.45; }
+details { border-bottom: 1px solid var(--line); padding: 10px 0; }
+details summary { cursor: pointer; font-weight: 600; }
+details p { margin: 8px 0 2px; color: var(--muted); }
+kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85em; border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px; }

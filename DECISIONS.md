@@ -83,7 +83,8 @@ Judgement calls made while building the SelfHostBench smoke test (2026-11-01), a
   - A 2-second warm-up runs before each measured transcode. Without it, the first NVENC run on this machine reported 0.98×
     when the true speed was ~6×, because of one-off CUDA start-up.
   - Concurrency: N = 1…8 simultaneous transcodes of the first 10 s, run flat out; N passes if the **slowest** stream is
-    ≥1.0×. We report the largest passing N (0 if even one stream is below real time), capped at 8.
+    ≥1.0×. We report the largest passing N, capped at 8. If the single full-clip transcode is already below 1.0×, the
+    step-up is skipped and 0 is reported (saves several minutes on slow boxes).
 - **Immich ML:** only the `immich-machine-learning` image, driven at its HTTP endpoint. It worked reliably, so v0.1 ships
   all three apps. Default models (`ViT-B-32__openai`, `buffalo_l` with `minScore 0.7`); concurrency 2, matching Immich's
   default job concurrency; `MACHINE_LEARNING_MODEL_TTL=0` so models aren't unloaded mid-run. CPU only (the `-cuda` and
@@ -102,6 +103,25 @@ Judgement calls made while building the SelfHostBench smoke test (2026-11-01), a
 - **`--yes` never auto-submits.** It skips the continue/cleanup prompts only. `selfhostbench submit FILE --yes` does submit (explicit).
 - **arm64:** all three images are multi-arch and the script has no x86-only code paths, so it should work on a Raspberry Pi 5,
   but this is untested. The README says so.
+
+## User experience (script)
+
+- After Aaron's feedback ("nice progress as things happen, as frictionless as possible"): each app is a numbered step
+  (`[1/3]`), every phase is a live status line with spinner and elapsed time, and downloads, model pulls, transcodes and photo
+  batches show progress bars. Colour only on a real terminal, and `NO_COLOR` is respected; plain logs when output is piped.
+- Image pulls go through the Docker Engine API on the local Unix socket (from `DOCKER_HOST` or the current `docker context`)
+  so we can show byte progress. If the socket isn't usable, we fall back to `docker pull`.
+- The summary adds a plain-English verdict per result (e.g. "about 26 min per 10,000 photos", "3 people streaming at once").
+  The thresholds are rough rules of thumb, not measurements.
+- After submitting, the script prints the result page and the device page (which has the email signup).
+- The machine description is shown **before** the "Start?" prompt, so users see what will be reported up front.
+
+## Variance seen on the build machine
+
+- Early test runs overlapped with the agent's own background image downloads on the same 4 vCPUs, and the desktop's RTX
+  3080 was shared with other Windows apps. CPU results from those runs were ~6× lower (Jellyfin CPU 10.5 vs 61.5 fps;
+  Immich CLIP 3.5 vs 21.3 photos/s), and Ollama varied between ~60 and ~200 tokens/s on the GPU. Only a run on a quiet
+  machine was submitted. Lesson for users: close other heavy work before running. The README and FAQ say so.
 
 ## Site
 
