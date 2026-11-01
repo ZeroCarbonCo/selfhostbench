@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SelfHostBench — will app X run well on box Y?</title>
+<meta name="description" content="Measured, open benchmark results for self-hosted apps (Ollama, Jellyfin, Immich) on real home-server hardware.">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b6e4f'/%3E%3Cpath d='M3 12V8h2v4zm4 0V4h2v8zm4 0V6h2v6z' fill='white'/%3E%3C/svg%3E">
+</head>
+<body data-page="home">
+<header class="site"><div class="wrap">
+  <a class="brand" href="/">SelfHostBench</a> <span class="badge">early project</span>
+  <nav>
+    <a href="/" aria-current="page">Home</a>
+    <a href="/results">Results</a>
+    <a href="/about">About &amp; privacy</a>
+    <a href="https://github.com/ZeroCarbonCo/selfhostbench">GitHub</a>
+  </nav>
+</div></header>
+<main class="wrap">
+
+<h1>Will it run well on my box?</h1>
+<p class="lead">SelfHostBench is a free, open-source script that measures how popular self-hosted apps actually perform on your
+home server. It starts each app in a temporary Docker container, runs the same fixed workload everyone runs, shows you the
+numbers, and — only if you say yes — adds them to a public results table, so the next person choosing a mini PC, NAS or
+single-board computer gets a measured answer instead of a guess.</p>
+
+<h2>What it tests (v0.1)</h2>
+<div class="apps">
+  <div class="card"><h3>Ollama</h3><p>Runs AI chat models locally. We measure how fast a small model (Llama 3.2 3B) writes text, in tokens per second.</p></div>
+  <div class="card"><h3>Jellyfin</h3><p>Personal media streaming. We measure how fast it converts a 4K video to 1080p, and how many people could stream at once.</p></div>
+  <div class="card"><h3>Immich</h3><p>Photo backup with AI search and face recognition. We measure how many photos per second it can index for search and faces.</p></div>
+</div>
+
+<h2>Run it</h2>
+<p>Needs Linux (x86_64; arm64 such as Raspberry Pi 5 should work but is untested), Docker, Python 3 and about 15 GB of free disk.
+Takes roughly 10–40 minutes. Nothing is sent unless you approve the exact JSON at the end.</p>
+<pre><code>curl -fsSLO https://github.com/ZeroCarbonCo/selfhostbench/releases/download/v0.1.0/selfhostbench
+curl -fsSLO https://github.com/ZeroCarbonCo/selfhostbench/releases/download/v0.1.0/selfhostbench.sha256
+sha256sum -c selfhostbench.sha256
+less selfhostbench          # read it first: ~750 lines of plain Python, standard library only
+python3 selfhostbench</code></pre>
+
+<p class="note">Prefer to keep results private? Add <code>--no-submit</code>. Test only some apps: <code>--apps ollama,jellyfin</code>.
+Details in the <a href="https://github.com/ZeroCarbonCo/selfhostbench#readme">README</a>.</p>
+
+<h2>Latest submissions</h2>
+<div id="latest"><p class="note">Loading…</p></div>
+<p><a href="/results">All results →</a></p>
+
+<h2>Get told when your device has data</h2>
+<form class="signup" novalidate>
+  <div class="row">
+    <input type="email" name="email" required placeholder="you@example.com" aria-label="Email address" autocomplete="email">
+    <input type="text" name="device" id="signup-device" placeholder="Your device, e.g. Beelink EQ12 (optional)" aria-label="Device model (optional)" maxlength="100">
+  </div>
+  <fieldset><legend>Apps you care about (optional)</legend>
+    <label><input type="checkbox" name="apps" value="ollama"> Ollama</label>
+    <label><input type="checkbox" name="apps" value="jellyfin"> Jellyfin</label>
+    <label><input type="checkbox" name="apps" value="immich"> Immich</label>
+  </fieldset>
+  <div><button type="submit">Tell me when my device has data</button></div>
+  <p class="msg" aria-live="polite"></p>
+  <p class="note">We store your email, the device and apps you enter, and the date. We'll only email you about SelfHostBench results, and every email will have an unsubscribe link. <a href="/about#privacy">Privacy</a>.</p>
+</form>
+
+</main>
+<footer class="site"><div class="wrap">
+  SelfHostBench is an early, open-source (MIT) project, built with AI assistance.
+  No cookies, no trackers. <a href="/about">What we collect</a> ·
+  <a href="https://github.com/ZeroCarbonCo/selfhostbench">Source</a>
+</div></footer>
+<script src="/app.js"></script>
+</body>
+</html>

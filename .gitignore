@@ -1,0 +1,11 @@
+# Private to the maintainer: contain the stats token, internal plans or notes.
+BRIEF.md
+LAUNCH.md
+HANDOFF.md
+*.secret
+.dev.vars
+# Build/dev artefacts
+node_modules/
+.wrangler/
+__pycache__/
+*.pyc

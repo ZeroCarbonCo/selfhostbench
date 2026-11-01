@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>About &amp; privacy · SelfHostBench</title>
+<meta name="description" content="What SelfHostBench measures, what it collects, and who is behind it.">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b6e4f'/%3E%3Cpath d='M3 12V8h2v4zm4 0V4h2v8zm4 0V6h2v6z' fill='white'/%3E%3C/svg%3E">
+</head>
+<body data-page="about">
+<header class="site"><div class="wrap">
+  <a class="brand" href="/">SelfHostBench</a> <span class="badge">early project</span>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/results">Results</a>
+    <a href="/about" aria-current="page">About &amp; privacy</a>
+    <a href="https://github.com/ZeroCarbonCo/selfhostbench">GitHub</a>
+  </nav>
+</div></header>
+<main class="wrap">
+<h1>About SelfHostBench</h1>
+<p class="lead">An early, experimental project to collect measured answers to "will app X run well on box Y?".
+It is a 3-week trial: if people find it useful we will keep going; if not, we will say so here and take it down.</p>
+
+<h2>Built with AI assistance</h2>
+<p>The benchmark script, this website and its API were written largely by an AI coding assistant (Anthropic's Claude),
+directed and reviewed by a human maintainer. All the code is public on
+<a href="https://github.com/ZeroCarbonCo/selfhostbench">GitHub</a>, so you can read exactly what it does before running it.
+Please <a href="https://github.com/ZeroCarbonCo/selfhostbench/issues">report problems</a>.</p>
+
+<h2>What is measured</h2>
+<ul>
+  <li><strong>Ollama</strong> (image <code>ollama/ollama:0.40.13</code>): the model <code>llama3.2:3b-instruct-q4_K_M</code> writes 256 tokens
+    for a fixed prompt, three times; we report the median tokens per second as timed by Ollama's own API. If Docker can use an
+    NVIDIA GPU, it is used and the result is labelled as such.</li>
+  <li><strong>Jellyfin</strong> (image <code>jellyfin/jellyfin:12.4.20261026-211555</code>): its bundled <code>jellyfin-ffmpeg</code>
+    converts a 30-second 4K HEVC clip to 1080p H.264 at 8 Mbit/s, first on the CPU (libx264, preset veryfast), then with hardware
+    acceleration if available (VA-API via <code>/dev/dri</code>, or NVIDIA NVENC). Frames per second and speed come from ffmpeg's
+    own progress report. We then run 1, 2, 3 … up to 8 conversions at once and report the largest number where every stream
+    keeps up with real time (≥1×).</li>
+  <li><strong>Immich machine learning</strong> (image <code>ghcr.io/immich-app/immich-machine-learning:v3.3.5</code>, without the
+    rest of Immich): 200 photos (1440 px, the size Immich itself sends) go through its inference API two at a time, as Immich does by
+    default, for smart-search embeddings (<code>ViT-B-32__openai</code>) and face detection (<code>buffalo_l</code>). We report photos
+    per second. CPU only in v0.1.</li>
+  <li>While each test runs we sample the container's CPU and memory once per second, and CPU package power from Intel/AMD RAPL
+    <em>only</em> if your system lets a normal user read it (most don't; then power is "not available").</li>
+</ul>
+
+<h2>What is not measured</h2>
+<ul>
+  <li>Idle power, wall-socket power, noise or temperatures.</li>
+  <li>The full Immich or Jellyfin apps (web UI, database, library scans) — only the heavy parts named above.</li>
+  <li>Intel QSV specifically (VA-API covers Intel and AMD iGPUs), AMD GPUs for Ollama, and GPU acceleration for Immich.</li>
+  <li>Storage, network and multi-user behaviour. Results in WSL2 or virtual machines are labelled because they can differ from bare metal.</li>
+</ul>
+
+<h2 id="privacy">Privacy: what we collect</h2>
+<p>The script shows you the exact JSON it would send and only sends it if you type <kbd>y</kbd>. It contains:</p>
+<ul>
+  <li>Hardware: CPU model, core and thread count, total RAM, system vendor and model name (from <code>/sys/class/dmi/id</code>),
+    GPU names, number of <code>/dev/dri</code> render nodes, CPU architecture.</li>
+  <li>Software: OS name and version, kernel version, Docker version, whether it ran in a VM/WSL, the script version and image versions.</li>
+  <li>Benchmark numbers, test durations and resource peaks, a random run ID, and the start time (to the minute, UTC).</li>
+</ul>
+<h3>What we do not collect</h3>
+<p>No hostnames, user names, IP addresses, serial numbers, MAC addresses, file paths, or anything about your files or network.
+For rate limiting only, the server stores a salted one-way hash of the submitting IP address; the IP itself is never stored.</p>
+<h3>Email signups</h3>
+<p>If you sign up, we store your email address, the device and apps you typed (optional), the date, and a salted IP hash for rate
+limiting. We use it only to tell you about SelfHostBench results. It is never sold or shared. Every email will include an
+unsubscribe link, and you get one straight away when you sign up.</p>
+<h3>Analytics</h3>
+<p>No cookies and no trackers. We may use Cloudflare Web Analytics, which is cookieless and does not fingerprint visitors, to count page views.</p>
+<h3>Where data lives</h3>
+<p>On Cloudflare (Pages, Workers and D1 database). Submitted benchmark results are public, including the raw JSON. To have a submission
+or your email removed, contact us below with the result ID or email address.</p>
+
+<h2>Terms</h2>
+<p>The script and site are provided as-is under the MIT licence, without warranty. The benchmark downloads several gigabytes and
+keeps your machine busy for a while; run it on hardware you're happy to load. Results are community-submitted and may be wrong;
+don't treat them as a guarantee of performance. Product names identify products only; we have no affiliation with any vendor
+and there are no affiliate links.</p>
+
+<h2>Licences and credits</h2>
+<ul>
+  <li>SelfHostBench code and this site: <a href="https://github.com/ZeroCarbonCo/selfhostbench/blob/main/LICENSE">MIT licence</a>.</li>
+  <li>Test video: a 30-second excerpt of <em>Big Buck Bunny</em>, © 2008 Blender Foundation | <a href="https://peach.blender.org/">peach.blender.org</a>,
+    licensed <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>; re-encoded to 4K HEVC by SelfHostBench.</li>
+  <li>Test photos: 200 images from <a href="https://commons.wikimedia.org/">Wikimedia Commons</a> under CC0, public domain,
+    CC BY or CC BY-SA, each credited individually in
+    <a href="https://github.com/ZeroCarbonCo/selfhostbench/blob/main/media/CREDITS.md">media/CREDITS.md</a>.</li>
+  <li>Ollama, Jellyfin, Immich and Llama 3.2 belong to their respective owners and are used unmodified via their official images.</li>
+</ul>
+
+<h2>Contact</h2>
+<p>Open an issue on <a href="https://github.com/ZeroCarbonCo/selfhostbench/issues">GitHub</a>, or email TODO-AARON.</p>
+</main>
+<footer class="site"><div class="wrap">
+  SelfHostBench is an early, open-source (MIT) project, built with AI assistance.
+  No cookies, no trackers. <a href="https://github.com/ZeroCarbonCo/selfhostbench">Source</a>
+</div></footer>
+<script src="/app.js"></script>
+</body>
+</html>

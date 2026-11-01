@@ -1,0 +1,12 @@
+{
+  "name": "selfhostbench-web",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "deploy": "wrangler pages deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.156.0"
+  }
+}

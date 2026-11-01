@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device · SelfHostBench</title>
+<meta name="description" content="Benchmark results for one device.">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b6e4f'/%3E%3Cpath d='M3 12V8h2v4zm4 0V4h2v8zm4 0V6h2v6z' fill='white'/%3E%3C/svg%3E">
+</head>
+<body data-page="device">
+<header class="site"><div class="wrap">
+  <a class="brand" href="/">SelfHostBench</a> <span class="badge">early project</span>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/results">Results</a>
+    <a href="/about">About &amp; privacy</a>
+    <a href="https://github.com/ZeroCarbonCo/selfhostbench">GitHub</a>
+  </nav>
+</div></header>
+<main class="wrap">
+
+<h1 id="device-name">Device</h1>
+<div id="device"><p class="note">Loading…</p></div>
+<h2>Get told when this device has more data</h2>
+<form class="signup" novalidate>
+  <div class="row">
+    <input type="email" name="email" required placeholder="you@example.com" aria-label="Email address" autocomplete="email">
+    <input type="text" name="device" id="signup-device" placeholder="Your device, e.g. Beelink EQ12 (optional)" aria-label="Device model (optional)" maxlength="100">
+  </div>
+  <fieldset><legend>Apps you care about (optional)</legend>
+    <label><input type="checkbox" name="apps" value="ollama"> Ollama</label>
+    <label><input type="checkbox" name="apps" value="jellyfin"> Jellyfin</label>
+    <label><input type="checkbox" name="apps" value="immich"> Immich</label>
+  </fieldset>
+  <div><button type="submit">Tell me when my device has data</button></div>
+  <p class="msg" aria-live="polite"></p>
+  <p class="note">We store your email, the device and apps you enter, and the date. We'll only email you about SelfHostBench results, and every email will have an unsubscribe link. <a href="/about#privacy">Privacy</a>.</p>
+</form>
+
+</main>
+<footer class="site"><div class="wrap">
+  SelfHostBench is an early, open-source (MIT) project, built with AI assistance.
+  No cookies, no trackers. <a href="/about">What we collect</a> ·
+  <a href="https://github.com/ZeroCarbonCo/selfhostbench">Source</a>
+</div></footer>
+<script src="/app.js"></script>
+</body>
+</html>

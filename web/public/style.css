@@ -1,0 +1,80 @@
+:root {
+  --bg: #fbfbf9;
+  --fg: #1d1f21;
+  --muted: #5f6368;
+  --line: #e2e2dc;
+  --card: #ffffff;
+  --accent: #0b6e4f;
+  --accent-fg: #ffffff;
+  --code: #f1f1ec;
+  --warn: #8a5a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141615;
+    --fg: #e7e7e3;
+    --muted: #a3a7a3;
+    --line: #2c302e;
+    --card: #1b1e1c;
+    --accent: #4cc39a;
+    --accent-fg: #0d1a14;
+    --code: #222623;
+    --warn: #e0b45c;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+header.site { border-bottom: 1px solid var(--line); }
+header.site .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; padding-top: 14px; padding-bottom: 14px; }
+header.site .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+header.site nav { display: flex; gap: 16px; flex-wrap: wrap; }
+header.site nav a { color: var(--muted); text-decoration: none; }
+header.site nav a:hover, header.site nav a[aria-current] { color: var(--fg); }
+.badge { display: inline-block; font-size: .75rem; padding: 1px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); }
+h1 { font-size: 1.8rem; line-height: 1.25; margin: 28px 0 8px; }
+h2 { font-size: 1.25rem; margin: 32px 0 8px; }
+p.lead { font-size: 1.1rem; color: var(--muted); max-width: 46em; }
+.note { color: var(--muted); font-size: .9rem; }
+.apps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 16px 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.card h3 { margin: 0 0 4px; font-size: 1rem; }
+.card p { margin: 0; color: var(--muted); font-size: .95rem; }
+pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; }
+pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
+pre code { background: none; padding: 0; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.filters { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+select, input[type=email], input[type=text] {
+  font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; min-width: 0;
+}
+form.signup { display: grid; gap: 10px; max-width: 520px; }
+form.signup .row { display: flex; flex-wrap: wrap; gap: 10px; }
+form.signup input[type=email], form.signup input[type=text] { flex: 1 1 220px; }
+fieldset { border: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+legend { padding: 0; margin-bottom: 4px; color: var(--muted); font-size: .9rem; }
+button {
+  font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-fg);
+  border: none; border-radius: 6px; padding: 9px 16px; cursor: pointer;
+}
+.msg { min-height: 1.5em; font-size: .95rem; }
+.warn { color: var(--warn); }
+footer.site { border-top: 1px solid var(--line); margin-top: 48px; padding: 18px 0 32px; color: var(--muted); font-size: .9rem; }
+.tag { font-size: .78rem; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+dl.kv dt { color: var(--muted); }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
