@@ -122,6 +122,9 @@ Judgement calls made while building the SelfHostBench smoke test (2026-11-01), a
   3080 was shared with other Windows apps. CPU results from those runs were ~6× lower (Jellyfin CPU 10.5 vs 61.5 fps;
   Immich CLIP 3.5 vs 21.3 photos/s), and Ollama varied between ~60 and ~200 tokens/s on the GPU. Only a run on a quiet
   machine was submitted. Lesson for users: close other heavy work before running. The README and FAQ say so.
+- The final full run (from the release, in a clean shell and a real terminal) had one bad reading: Immich face detection
+  1.31 photos/s against 6.5, 7.2 and 7.35 in the other runs. An Immich-only re-run gave 7.35. We submitted three complete,
+  unedited runs (owner-flagged) rather than hand-picking numbers. The server's 3× outlier rule flagged the 1.31 automatically.
 
 ## Site
 
