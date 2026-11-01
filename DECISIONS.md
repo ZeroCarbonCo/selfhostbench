@@ -131,4 +131,4 @@ Judgement calls made while building the SelfHostBench smoke test (2026-11-01), a
 - Static HTML/CSS/JS, no framework, no cookies, no trackers. Results are fetched client-side from `/api/results`.
 - Cloudflare Web Analytics (cookieless, no banner) needs a one-click enable in the Cloudflare dashboard by the account owner
   (see HANDOFF.md); the agent's Wrangler login can't toggle it.
-- Contact email placeholder `TODO-AARON` on the About page (none configured), plus GitHub Issues.
+- Contact: selfhostbench@mojoworld.com (chosen by the owner) plus GitHub Issues.
