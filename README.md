@@ -48,7 +48,7 @@ Options:
 python3 selfhostbench --apps ollama,jellyfin   # test a subset (ollama, jellyfin, immich)
 python3 selfhostbench --no-submit              # keep results local only
 python3 selfhostbench --no-gpu                 # CPU only
-python3 selfhostbench --yes                    # skip the "continue?" prompts (never auto-submits)
+python3 selfhostbench --yes                    # skip the prompts (never submits; use the submit command after)
 python3 selfhostbench --keep-images            # keep downloaded images and media for next time
 python3 selfhostbench submit ~/.selfhostbench/results/<file>.json   # submit a saved result later
 ```
@@ -60,7 +60,8 @@ python3 selfhostbench submit ~/.selfhostbench/results/<file>.json   # submit a s
    GPU names (`lspci`, `nvidia-smi`), `/dev/dri` render nodes, OS, kernel, Docker version, and whether it is a VM/WSL.
 3. **Tests** run one app at a time in temporary containers named `shb-<app>-<run id>`.
 4. **Results** are printed and saved to `~/.selfhostbench/results/`.
-5. **Submission:** the exact JSON is printed, then you're asked `Submit these results? [y/N]`.
+5. **Submission:** the exact JSON is printed, then you're asked `Submit these results? [Y/n]`.
+   Press Enter to share them, or type `n` to keep them local (`--no-submit` skips the question).
 6. **Cleanup:** containers and volumes are always removed. You're asked whether to keep the images and media the
    run downloaded (default: remove). Images you already had are never removed.
 

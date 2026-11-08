@@ -60,7 +60,7 @@ Results for WSL2 on AMD Ryzen 9 5900X
   Jellyfin simultaneous streams (NVENC)  8+ streams      8+ people streaming at once
   Immich face detection (CPU)            6.50 photos/s   about 26 min per 10,000 photos
 
-Submit these results to selfhostbench.pages.dev? They will be public. [y/N]</code></pre>
+Submit these results to selfhostbench.pages.dev? They will be public. [Y/n]</code></pre>
 
 <h2>Questions</h2>
 <details><summary>Is it safe to run?</summary>
@@ -68,7 +68,8 @@ Submit these results to selfhostbench.pages.dev? They will be public. [y/N]</cod
 It doesn't need root (though Docker access is required), doesn't touch your existing containers, and never removes images you already had.
 Please read it before running; that's why we don't suggest <code>curl | bash</code>.</p></details>
 <details><summary>What gets sent, and when?</summary>
-<p>Nothing, unless you type <kbd>y</kbd> at the end after seeing the exact JSON. It contains hardware model names, OS/Docker versions
+<p>Nothing until the very end. It first shows you the exact JSON, then asks; press <kbd>Enter</kbd> to share it,
+or type <kbd>n</kbd> to keep your results on your machine. It contains hardware model names, OS/Docker versions
 and the benchmark numbers: no hostname, IP address, serial numbers or file paths. <a href="/about#privacy">Full details</a>.</p></details>
 <details><summary>Will it work on my NAS / Raspberry Pi / mini PC?</summary>
 <p>Anything running Linux with Docker should work. It's been tested on x86_64. arm64 (e.g. Raspberry Pi 5) should work but hasn't

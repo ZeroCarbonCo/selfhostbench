@@ -100,7 +100,10 @@ Judgement calls made while building the SelfHostBench smoke test (2026-11-01), a
   The run ID is random and not derived from the machine.
 - **Cleanup:** containers and volumes are labelled `selfhostbench.run=<id>` and removed after each app and on exit or
   Ctrl-C. Images that existed before the run are never removed; new ones are removed unless the user keeps them.
-- **`--yes` never auto-submits.** It skips the continue/cleanup prompts only. `selfhostbench submit FILE --yes` does submit (explicit).
+- **The submit prompt defaults to yes** (`[Y/n]`, owner's call on 2026-11-08, to lift the submission rate). Consent stays
+  explicit: the exact JSON is printed directly above the question, the question says the results will be public, and
+  `--no-submit` skips it. **`--yes` and non-interactive runs (piped stdin) never submit**, because no one has seen the JSON;
+  they print the `submit` command instead. `selfhostbench submit FILE --yes` does submit (explicit).
 - **arm64:** all three images are multi-arch and the script has no x86-only code paths, so it should work on a Raspberry Pi 5,
   but this is untested. The README says so.
 

@@ -926,9 +926,14 @@ def offer_submit(doc, path, api, confirmed=False):
     say("  Here is exactly what would be sent. Nothing else is collected: no hostname, IP, serials or paths.\n")
     say(json.dumps(doc, indent=2))
     say("")
-    if not confirmed and not ask(f"Submit these results to {api.split('//')[-1]}? They will be public.", default=False):
-        note(f"Not submitted. To submit later: python3 {sys.argv[0]} submit {path}")
-        return
+    if not confirmed:
+        # Enter means yes, but only when a person is answering: --yes and piped runs never submit.
+        if ASSUME_YES or not sys.stdin.isatty():
+            note(f"Not submitted (no one to ask). To submit: python3 {sys.argv[0]} submit {path}")
+            return
+        if not ask(f"Submit these results to {api.split('//')[-1]}? They will be public.", default=True):
+            note(f"Not submitted. To submit later: python3 {sys.argv[0]} submit {path}")
+            return
     try:
         r = submit(doc, api)
         say(f"  {green(TICK)} Submitted, thank you!")
@@ -970,7 +975,7 @@ def preflight(apps, hw):
     free_gb = shutil.disk_usage(Path.home()).free / 1e9
     need = total_gb * 2.5 + 3
     say(f"\n  Free disk: {free_gb:.0f} GB (needs about {need:.0f} GB while running).")
-    say("  Everything it creates is removed afterwards. Nothing is sent unless you say yes at the end.")
+    say("  Everything it creates is removed afterwards. At the end you see exactly what would be shared, and can say no.")
     say(f"  {dim('Tip: for fair numbers, pause other heavy work (transcodes, backups, games) while it runs.')}")
     if free_gb < need:
         warn("Free disk space looks low (Docker may store images elsewhere, so this may be fine).")
@@ -1060,11 +1065,12 @@ def main():
         sp.add_argument("--no-submit", action="store_true", help="keep results local only")
         sp.add_argument("--no-gpu", action="store_true", help="do not try GPU acceleration")
         sp.add_argument("--keep-images", action="store_true", help="keep downloaded images and media afterwards")
-        sp.add_argument("--api", default=API_BASE, help=argparse.SUPPRESS)
+        # SUPPRESS on subcommands so their default doesn't overwrite an --api given before the subcommand
+        sp.add_argument("--api", default=API_BASE if sp is p else argparse.SUPPRESS, help=argparse.SUPPRESS)
     sp = sub.add_parser("submit", help="submit a saved result file")
     sp.add_argument("file")
     sp.add_argument("--yes", "-y", action="store_true", help="submit without asking")
-    sp.add_argument("--api", default=API_BASE, help=argparse.SUPPRESS)
+    sp.add_argument("--api", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     args = p.parse_args()
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(1))
     atexit.register(cleanup)
